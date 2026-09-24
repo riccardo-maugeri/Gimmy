@@ -1,9 +1,9 @@
-/* Gym Tracker: app personale per scheda, progressione e storico.
+/* Gimmy: app personale per scheda, progressione e storico.
    Tutti i dati restano sul telefono (localStorage). */
 'use strict';
 (function () {
 
-  var APP_VERSION = '1.1.0';
+  var APP_VERSION = '1.1.1';
   var STORE_KEY = 'gymtracker.v1';
   var DAY_ORDER = ['lun', 'mer', 'ven'];
   var TARGET_STREAK = 3;
@@ -819,7 +819,7 @@
       '<button type="button" class="btn primary block" data-a="export">Salva backup</button>' +
       '<button type="button" class="btn block" data-a="import">Carica un backup</button>' +
       '<input type="file" id="import-file" accept="application/json,.json" style="display:none"></div>';
-    h += '<p class="xsmall muted mt-18" style="text-align:center">Gym Tracker ' + APP_VERSION + '</p>';
+    h += '<p class="xsmall muted mt-18" style="text-align:center">Gimmy ' + APP_VERSION + '</p>';
     return h + '</main>' + tabbar('scheda');
   }
 
@@ -1308,7 +1308,17 @@
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { /* no */ }
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
     window.addEventListener('load', function () {
-      navigator.serviceWorker.register('sw.js').catch(function () {});
+      var hadController = !!navigator.serviceWorker.controller;
+      var reloaded = false;
+      // quando arriva una versione nuova dell'app, la pagina si ricarica da sola una volta
+      navigator.serviceWorker.addEventListener('controllerchange', function () {
+        if (!hadController || reloaded) return;
+        reloaded = true;
+        location.reload();
+      });
+      navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(function (reg) {
+        try { reg.update(); } catch (e) { /* no */ }
+      }).catch(function () {});
     });
   }
 
