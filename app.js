@@ -3,7 +3,7 @@
 'use strict';
 (function () {
 
-  var APP_VERSION = '1.0.0';
+  var APP_VERSION = '1.1.0';
   var STORE_KEY = 'gymtracker.v1';
   var DAY_ORDER = ['lun', 'mer', 'ven'];
   var TARGET_STREAK = 3;
@@ -23,9 +23,10 @@
       id: id, name: name, kind: kind, inc: inc, unit: unit,
       sets: sets, reps: 8, weight: weight,
       warmups: (warmups || []).map(function (p) { return { w: p[0], r: p[1] }; }),
-      rest: 90, note: '', streak: 0, proposed: null
+      rest: 120, note: '', streak: 0, proposed: null, tol: false
     };
   }
+  var ARMS = ['curl_inclinata', 'push_down', 'hammer_curl', 'cable_overhead'];
 
   function defaultConfig() {
     var M = 'manubri', F = 'fisso', PM = 'per manubrio', PC = 'per cavo';
@@ -49,11 +50,13 @@
       ex('pectoral', 'Macchinario pectoral', F, 2.5, '', 2, 40, [[35, 8]]),
       ex('croci_basse', 'Croci basse ai cavi', F, 2.5, PC, 3, 7.5),
       ex('alzate_posteriori', 'Alzate posteriori', M, 1, PM, 2, 7, [[6, 8]]),
+      ex('alzate_laterali_cavi', 'Alzate laterali ai cavi', F, 2.5, PC, 3, 7.5, [[5, 8]]),
+      ex('croci_inverse', 'Croci inverse ai cavi', F, 2.5, PC, 2, 5),
       ex('hammer_curl', 'Cable hammer curl', F, 2.5, '', 3, 20, [[15, 6]]),
       ex('cable_overhead', 'Cable overhead', F, 2.5, '', 3, 15, [[12.5, 6]])
     ];
     var exercises = {};
-    list.forEach(function (e) { exercises[e.id] = e; });
+    list.forEach(function (e) { exercises[e.id] = e; if (ARMS.indexOf(e.id) >= 0) e.tol = true; });
     return {
       warmupRest: 45,
       exercises: exercises,
@@ -62,8 +65,8 @@
           ex: ['panca_piana', 'panca_inclinata', 'lat_machine', 'pulley_una_mano', 'corda_trapezi', 'alzate_laterali', 'lento_avanti', 'curl_inclinata', 'push_down'] },
         mer: { name: 'Mercoledì', sub: 'Gambe e richiami', weekday: 3,
           ex: ['leg_press', 'leg_extension', 'leg_curl', 'adductor', 'croci_cavi', 'pulley_centro'] },
-        ven: { name: 'Venerdì', sub: 'Petto, schiena, spalle, braccia', weekday: 5,
-          ex: ['spinte', 'pectoral', 'croci_basse', 'lat_machine', 'corda_trapezi', 'alzate_laterali', 'alzate_posteriori', 'hammer_curl', 'cable_overhead'] }
+        ven: { name: 'Giovedì', sub: 'Petto, schiena, spalle, braccia', weekday: 4,
+          ex: ['spinte', 'pectoral', 'croci_basse', 'lat_machine', 'corda_trapezi', 'alzate_laterali_cavi', 'croci_inverse', 'hammer_curl', 'cable_overhead'] }
       }
     };
   }
@@ -80,11 +83,50 @@
         if (data && data.config && data.sessions) return normalize(data);
       }
     } catch (e) { /* dati illeggibili: si riparte */ }
-    return { v: 1, config: defaultConfig(), sessions: [], active: null };
+    return { v: 2, config: defaultConfig(), sessions: [], active: null };
+  }
+
+  // Aggiornamento 1.1: giovedì al posto del venerdì, recupero 2 minuti, esercizi ai cavi, correzione dati
+  function migrateV2(data) {
+    var c = data.config, d = defaultConfig();
+    if (c.days.ven) {
+      c.days.ven.name = 'Giovedì';
+      c.days.ven.weekday = 4;
+      c.days.ven.ex = c.days.ven.ex.map(function (id) {
+        if (id === 'alzate_laterali') return 'alzate_laterali_cavi';
+        if (id === 'alzate_posteriori') return 'croci_inverse';
+        return id;
+      });
+    }
+    ['alzate_laterali_cavi', 'croci_inverse'].forEach(function (id) {
+      if (!c.exercises[id]) c.exercises[id] = d.exercises[id];
+    });
+    Object.keys(c.exercises).forEach(function (k) {
+      var e = c.exercises[k];
+      if (e.rest === 90) e.rest = 120;
+      if (ARMS.indexOf(k) >= 0) e.tol = true;
+    });
+    // le alzate laterali del giovedì erano fatte ai cavi: tolte dallo storico dei manubri
+    var touched = false;
+    data.sessions.forEach(function (s) {
+      if (s.day !== 'ven') return;
+      s.entries.forEach(function (en) {
+        if (en.id === 'alzate_laterali' && !en.skipped) {
+          delete en.sets; delete en.used; delete en.hit;
+          en.skipped = true; touched = true;
+        }
+      });
+    });
+    if (touched && c.exercises.alzate_laterali) {
+      c.exercises.alzate_laterali.streak = 0;
+      c.exercises.alzate_laterali.proposed = null;
+    }
+    if (data.active && data.active.day === 'ven') data.active = null;
+    data.v = 2;
   }
 
   function normalize(data) {
-    data.v = 1;
+    if (!data.v || data.v < 2) migrateV2(data);
     if (typeof data.config.warmupRest !== 'number') data.config.warmupRest = 45;
     Object.keys(data.config.exercises).forEach(function (k) {
       var e = data.config.exercises[k];
@@ -351,9 +393,34 @@
     var e = E(id);
     var w = e.proposed != null ? e.proposed : e.weight;
     var sets = [];
-    e.warmups.forEach(function (x) { sets.push({ t: 'w', w: x.w, r: x.r, done: false }); });
+    warmupPlan(e, w).forEach(function (x) { sets.push({ t: 'w', w: x.w, r: x.r, done: false }); });
     for (var i = 0; i < e.sets; i++) sets.push({ t: 's', w: w, r: e.reps, done: false });
     return { id: id, status: 'todo', sets: sets, cur: 0, declined: false };
+  }
+
+  // Ripetizioni di ingresso: 1 serie → 8 (peso ~75% del lavoro), 2 → 8-4, 3 → 8-4-1
+  function warmupReps(n) {
+    if (n === 1) return [8];
+    if (n === 2) return [8, 4];
+    var r = [8];
+    for (var i = 1; i < n - 1; i++) r.push(4);
+    r.push(1);
+    return r;
+  }
+  function roundWeight(e, w) {
+    if (e.kind === 'manubri') {
+      var best = DUMBBELLS[0];
+      DUMBBELLS.forEach(function (d) { if (Math.abs(d - w) < Math.abs(best - w)) best = d; });
+      return best;
+    }
+    var step = e.inc || 2.5;
+    return Math.round(Math.round(w / step) * step * 100) / 100;
+  }
+  function warmupPlan(e, workW) {
+    var n = e.warmups.length;
+    var reps = warmupReps(n);
+    if (n === 1) return [{ w: roundWeight(e, workW * 0.75), r: 8 }];
+    return e.warmups.map(function (x, i) { return { w: x.w, r: reps[i] }; });
   }
 
   function startWorkout(k) {
@@ -507,7 +574,10 @@
   function finishWorkout() {
     var a = S.active;
     var end = Date.now();
-    var sum = { day: a.day, start: a.start, end: end, done: 0, total: a.entries.length, up: [], near: [], reset: [], skipped: [] };
+    var sum = { day: a.day, start: a.start, end: end, done: 0, total: a.entries.length, up: [], near: [], hold: [], reset: [], skipped: [], volume: 0, prevVolume: null };
+    var prev = null;
+    for (var p = S.sessions.length - 1; p >= 0; p--) { if (S.sessions[p].day === a.day) { prev = S.sessions[p]; break; } }
+    if (prev) sum.prevVolume = sessionVolume(prev);
     var sess = { id: a.id, day: a.day, start: a.start, end: end, entries: [] };
     a.entries.forEach(function (en) {
       var e = E(en.id);
@@ -523,6 +593,9 @@
       var doneWork = work.filter(function (x) { return x.done; });
       var used = doneWork.length ? Math.min.apply(null, doneWork.map(function (x) { return x.w; })) : e.weight;
       var hit = work.length > 0 && work.every(function (x) { return x.done && x.r >= e.reps; });
+      doneWork.forEach(function (x) { sum.volume += x.w * x.r; });
+      var miss = work.every(function (x) { return x.done; }) ?
+        work.reduce(function (t, x) { return t + Math.max(0, e.reps - x.r); }, 0) : 99;
       var why = '';
       if (!hit) {
         for (var i = 0; i < work.length; i++) {
@@ -534,8 +607,9 @@
         id: en.id, used: used, hit: hit,
         sets: en.sets.filter(function (x) { return x.done; }).map(function (x) { return { t: x.t, w: x.w, r: x.r }; })
       });
-      applyProgression(e, used, hit, why, sum);
+      applyProgression(e, used, hit, why, sum, miss);
     });
+    sess.volume = Math.round(sum.volume);
     if (sum.done > 0) S.sessions.push(sess);
     S.active = null;
     save();
@@ -546,7 +620,19 @@
 
   // Regola: 3 sessioni consecutive con tutte le serie di lavoro a 8 ripetizioni = aumento.
   // Esercizio saltato: nessun effetto. Sessione non chiusa a 8: conteggio a zero.
-  function applyProgression(e, used, hit, why, sum) {
+  function sessionVolume(s) {
+    if (typeof s.volume === 'number') return s.volume;
+    var v = 0;
+    s.entries.forEach(function (en) {
+      (en.sets || []).forEach(function (x) { if (x.t === 's') v += x.w * x.r; });
+    });
+    return Math.round(v);
+  }
+  function volTxt(v) {
+    return Math.round(v).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.') + ' kg';
+  }
+
+  function applyProgression(e, used, hit, why, sum, miss) {
     if (e.proposed != null) {
       if (used >= e.proposed - 1e-9) {
         e.weight = used; e.proposed = null; e.streak = hit ? 1 : 0;
@@ -555,6 +641,9 @@
       }
     } else if (Math.abs(used - e.weight) > 1e-9) {
       e.weight = used; e.streak = hit ? 1 : 0; // peso cambiato a mano: si riparte da qui
+    } else if (!hit && e.tol && miss === 1) {
+      sum.hold.push({ name: e.name, streak: e.streak }); // braccia: 1 ripetizione in meno, non conta e non azzera
+      return;
     } else {
       e.streak = hit ? e.streak + 1 : 0;
     }
@@ -572,34 +661,55 @@
     if (!s) return viewHome();
     var d = S.config.days[s.day];
     var h = '<main class="screen">';
-    h += '<div class="stack gap-10 center" style="padding-top:30px"><div class="ok-circle">' + svg('<path d="M20 6L9 17l-5-5"/>', 36, 3) + '</div>' +
-      '<h1 class="title" style="font-size:32px">Allenamento finito</h1>' +
-      '<span class="muted">' + esc(d ? d.name : '') + ' · ' + s.done + ' esercizi su ' + s.total + ' · ' + durTxt(s.end - s.start) + '</span></div>';
+    h += '<div class="row gap-14" style="padding-top:22px"><div class="ok-circle" style="width:52px;height:52px;flex-shrink:0">' + svg('<path d="M20 6L9 17l-5-5"/>', 28, 3) + '</div>' +
+      '<div class="stack gap-2"><h1 class="title" style="font-size:25px;white-space:nowrap">Allenamento finito</h1><span class="muted">' + esc(d ? d.name : '') + ' · ' + esc(dateTxt(s.start)) + '</span></div></div>';
+
+    // i tre numeri principali
+    var delta = '';
+    if (s.prevVolume) {
+      var pct = Math.round((s.volume - s.prevVolume) / s.prevVolume * 100);
+      delta = (pct > 0 ? '+' : '') + pct + '% di volume rispetto all\'ultima volta';
+    } else {
+      delta = 'Il confronto del volume parte dal prossimo ' + esc(d ? d.name.toLowerCase() : '');
+    }
+    h += '<div class="tiles mt-18">' +
+      '<div class="tile"><span class="xsmall muted">Tempo</span><span class="v" style="font-size:19px">' + durTxt(s.end - s.start) + '</span></div>' +
+      '<div class="tile"><span class="xsmall muted">Esercizi</span><span class="v" style="font-size:19px">' + s.done + ' su ' + s.total + '</span></div>' +
+      '<div class="tile"><span class="xsmall muted">Volume</span><span class="v" style="font-size:17px;white-space:nowrap">' + volTxt(s.volume) + '</span></div></div>' +
+      '<p class="small mt-10" style="font-weight:600">' + delta + '</p><p class="xsmall muted">Volume = peso × ripetizioni delle serie allenanti.</p>';
+
     if (s.up.length) {
-      h += '<div class="card-dark stack gap-12 mt-24"><span class="label">La prossima volta si sale</span>' +
+      h += '<div class="card-dark stack gap-12 mt-18"><span class="label">La prossima volta si sale</span>' +
         s.up.map(function (u) { return '<div class="between"><span>' + esc(u.name) + '</span><span class="num" style="font-size:19px;white-space:nowrap">' + fmt(u.from) + ' → ' + fmt(u.to) + ' kg</span></div>'; }).join('') + '</div>';
     }
-    if (s.near.length || s.reset.length) {
-      h += '<div class="card stack gap-12 mt-14">';
-      if (s.near.length) {
-        h += '<span class="label">Verso l\'aumento</span>';
-        s.near.forEach(function (n) {
-          var ms = '';
-          for (var i = 0; i < TARGET_STREAK; i++) ms += '<span' + (i < n.streak ? ' class="on"' : '') + '></span>';
-          h += '<div class="between"><span>' + esc(n.name) + '</span><span class="row gap-8 small muted" style="white-space:nowrap"><span class="mini-segs">' + ms + '</span>' + n.streak + ' su 3</span></div>';
-        });
-      }
-      if (s.near.length && s.reset.length) h += '<div class="divider"></div>';
-      if (s.reset.length) {
-        h += '<span class="label">Si riparte da 0</span>';
-        s.reset.forEach(function (r) {
-          h += '<div class="stack gap-2"><span>' + esc(r.name) + '</span><span class="xsmall muted">' + esc(r.why) + '</span></div>';
-        });
+
+    var near = s.near.length || (s.hold && s.hold.length);
+    if (near) {
+      h += '<div class="card stack gap-12 mt-14"><span class="label">Verso l\'aumento</span>';
+      [2, 1].forEach(function (k) {
+        var names = s.near.filter(function (n) { return n.streak === k; }).map(function (n) { return n.name; });
+        if (!names.length) return;
+        var ms = '';
+        for (var i = 0; i < TARGET_STREAK; i++) ms += '<span' + (i < k ? ' class="on"' : '') + '></span>';
+        h += '<div class="stack gap-4"><span class="row gap-8 small" style="font-weight:600"><span class="mini-segs">' + ms + '</span>' + k + ' su 3' + (k === 2 ? ' · manca una sessione' : '') + '</span>' +
+          '<span>' + esc(names.join(', ')) + '</span></div>';
+      });
+      if (s.hold && s.hold.length) {
+        h += '<div class="stack gap-4"><span class="small" style="font-weight:600">1 ripetizione in meno · non conta, non azzera</span>' +
+          '<span>' + esc(s.hold.map(function (n) { return n.name + ' (' + n.streak + ' su 3)'; }).join(', ')) + '</span></div>';
       }
       h += '</div>';
     }
-    h += '<div class="between mt-14" style="padding:14px 20px;border-radius:18px;border:1px dashed #CFC8B8"><span class="muted">Esercizi saltati</span><span style="font-weight:500;text-align:right">' +
-      (s.skipped.length ? esc(s.skipped.join(', ')) : 'Nessuno') + '</span></div>';
+    if (s.reset.length) {
+      h += '<div class="card stack gap-12 mt-14"><span class="label">Si riparte da 0</span>';
+      s.reset.forEach(function (r) {
+        h += '<div class="stack gap-2"><span>' + esc(r.name) + '</span><span class="xsmall muted">' + esc(r.why) + '</span></div>';
+      });
+      h += '</div>';
+    }
+    if (s.skipped.length) {
+      h += '<div class="stack gap-4 mt-14" style="padding:14px 20px;border-radius:18px;border:1px dashed #CFC8B8"><span class="label">Saltati · nessun effetto</span><span>' + esc(s.skipped.join(', ')) + '</span></div>';
+    }
     h += '<div class="mt-auto" style="padding-top:24px"><button type="button" class="cta" data-a="tab" data-v="home">Chiudi</button></div>';
     return h + '</main>';
   }
@@ -740,14 +850,20 @@
       '<div class="grid-2"><label class="field"><span>Peso attuale (kg)</span><input class="input" id="f-weight" type="text" inputmode="decimal" value="' + fmt(e.weight) + '"></label>' +
       '<label class="field"><span>Recupero (secondi)</span><input class="input" id="f-rest" type="number" inputmode="numeric" min="0" step="5" value="' + e.rest + '"></label></div>';
 
-    h += '<div class="stack gap-8"><span class="small muted">Serie di ingresso (non contano per la progressione)</span>';
+    h += '<div class="stack gap-8"><span class="small muted">Serie di ingresso (non contano per la progressione). Ripetizioni automatiche: 1 serie = 8 al 75% del peso, 2 serie = 8 e 4, 3 serie = 8, 4 e 1.</span>';
+    var wr = warmupReps(e.warmups.length);
     if (e.warmups.length) h += '<div class="wu-row xsmall muted"><span>Kg</span><span>Ripetizioni</span><span></span></div>';
     e.warmups.forEach(function (w, i) {
-      h += '<div class="wu-row"><input class="input" data-wu-w="' + i + '" type="text" inputmode="decimal" value="' + fmt(w.w) + '" aria-label="Peso ingresso ' + (i + 1) + '">' +
-        '<input class="input" data-wu-r="' + i + '" type="number" inputmode="numeric" value="' + w.r + '" aria-label="Ripetizioni ingresso ' + (i + 1) + '">' +
+      var single = e.warmups.length === 1;
+      h += '<div class="wu-row">' +
+        (single ? '<span class="input" style="display:flex;align-items:center;color:var(--muted)">' + fmt(roundWeight(e, (e.weight || 0) * 0.75)) + ' (auto)</span>'
+          : '<input class="input" data-wu-w="' + i + '" type="text" inputmode="decimal" value="' + fmt(w.w) + '" aria-label="Peso ingresso ' + (i + 1) + '">') +
+        '<span class="input" style="display:flex;align-items:center;color:var(--muted)">' + wr[i] + '</span>' +
         '<button type="button" class="icon-btn" data-a="wu-del" data-v="' + i + '" aria-label="Togli ingresso ' + (i + 1) + '">' + IC.trash + '</button></div>';
     });
     h += '<button type="button" class="btn" data-a="wu-add" style="align-self:flex-start">+ Aggiungi serie di ingresso</button></div>';
+    h += '<label class="row gap-10" style="min-height:44px"><input type="checkbox" id="f-tol"' + (e.tol ? ' checked' : '') + ' style="width:22px;height:22px;accent-color:var(--accent)">' +
+      '<span class="small">Tolleranza di 1 ripetizione (per esercizi a fine allenamento, es. braccia): non conta ma non azzera</span></label>';
 
     h += '<label class="field"><span>Nota (es. posizione del sedile)</span><textarea class="input" id="f-note">' + esc(e.note) + '</textarea></label>';
 
@@ -782,6 +898,8 @@
     if (g('f-weight') != null) e.weight = parseNum(g('f-weight'));
     if (g('f-rest') != null) e.rest = parseInt(g('f-rest'), 10);
     if (g('f-note') != null) e.note = g('f-note');
+    var tolEl = document.getElementById('f-tol');
+    if (tolEl) e.tol = tolEl.checked;
     e.warmups.forEach(function (w, i) {
       var ew = document.querySelector('[data-wu-w="' + i + '"]');
       var er = document.querySelector('[data-wu-r="' + i + '"]');
@@ -801,7 +919,8 @@
     if (e.weight == null || e.weight < 0) errs.push('il peso');
     if (e.kind === 'fisso' && !(e.inc > 0)) errs.push("l'incremento");
     if (!(e.rest >= 0)) e.rest = 90;
-    e.warmups = e.warmups.filter(function (w) { return w.w != null && w.r > 0; });
+    if (e.warmups.length === 1) e.warmups[0].w = roundWeight(e, e.weight * 0.75);
+    e.warmups = e.warmups.filter(function (w) { return w.w != null; });
     if (errs.length) { toastSheet('Controlla ' + errs.join(', ') + '.'); return; }
     if (e.kind === 'manubri') e.inc = e.inc || 2;
     var existing = E(e.id);
@@ -817,7 +936,38 @@
 
   function openSheet(inner) {
     document.getElementById('sheet-root').innerHTML =
-      '<div class="overlay" data-a="sheet-bg"><div class="sheet" role="dialog" aria-modal="true"><div class="grab"></div>' + inner + '</div></div>';
+      '<div class="overlay" data-a="sheet-bg"><div class="sheet" role="dialog" aria-modal="true">' +
+      '<div class="sheet-head"><div class="grab"></div><button type="button" class="sheet-x" data-a="sheet-close" aria-label="Chiudi">' +
+      svg('<path d="M18 6L6 18M6 6l12 12"/>', 20) + '</button></div>' + inner + '</div></div>';
+    bindSheetDrag();
+  }
+
+  // chiusura della tendina trascinandola verso il basso
+  function bindSheetDrag() {
+    var sheet = document.querySelector('#sheet-root .sheet');
+    if (!sheet) return;
+    var y0 = null, dy = 0;
+    sheet.addEventListener('touchstart', function (ev) {
+      if (sheet.scrollTop > 0) { y0 = null; return; }
+      y0 = ev.touches[0].clientY; dy = 0;
+      sheet.style.transition = 'none';
+    }, { passive: true });
+    sheet.addEventListener('touchmove', function (ev) {
+      if (y0 == null) return;
+      dy = ev.touches[0].clientY - y0;
+      if (dy > 0) sheet.style.transform = 'translateY(' + dy + 'px)';
+    }, { passive: true });
+    sheet.addEventListener('touchend', function () {
+      if (y0 == null) return;
+      sheet.style.transition = 'transform 0.18s ease-out';
+      if (dy > 90) {
+        sheet.style.transform = 'translateY(100%)';
+        setTimeout(closeSheet, 170);
+      } else {
+        sheet.style.transform = '';
+      }
+      y0 = null;
+    });
   }
   function closeSheet() { var r = document.getElementById('sheet-root'); if (r) r.innerHTML = ''; }
   function toastSheet(msg) {
@@ -1075,7 +1225,7 @@
     'new-ex': function (v) {
       ui.draft = {
         id: 'ex_' + uid(), name: '', kind: 'fisso', inc: 2.5, unit: '', sets: 3, reps: 8, weight: 20,
-        warmups: [], rest: 90, note: '', streak: 0, proposed: null
+        warmups: [], rest: 120, note: '', streak: 0, proposed: null, tol: false
       };
       go('edit-ex', { editEx: ui.draft.id, editDay: v });
     },

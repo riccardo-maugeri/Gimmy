@@ -1,6 +1,6 @@
 /* Service worker: fa funzionare l'app anche senza connessione.
    Quando aggiorni i file, cambia il numero di VERSION. */
-var VERSION = 'gt-1.0.0';
+var VERSION = 'gt-1.1.0';
 var SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', function (e) {

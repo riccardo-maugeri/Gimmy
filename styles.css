@@ -208,7 +208,9 @@ textarea.input { min-height: 96px; resize: vertical; }
   padding: 10px 20px calc(var(--safe-bottom) + 20px);
   animation: up 0.2s ease-out;
 }
-.sheet .grab { width: 40px; height: 5px; border-radius: 3px; background: var(--ring); margin: 0 auto 14px; }
+.sheet .grab { width: 40px; height: 5px; border-radius: 3px; background: var(--ring); margin: 0 auto; }
+.sheet-head { position: relative; display: flex; align-items: center; justify-content: center; min-height: 36px; margin-bottom: 8px; }
+.sheet-x { position: absolute; right: -8px; top: 0; width: 44px; height: 44px; border-radius: 22px; border: none; background: var(--line-soft); display: flex; align-items: center; justify-content: center; padding: 0; }
 @keyframes up { from { transform: translateY(24px); opacity: 0.6; } to { transform: none; opacity: 1; } }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 
